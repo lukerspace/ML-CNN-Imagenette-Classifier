@@ -1,33 +1,36 @@
 # ML-CNN-Imagenette-Classifier
 
-把 `Conv → ReLU → Pool → Conv → ReLU → Pool → Flatten → Linear → ReLU → Linear`
-這條最基本的 CNN → MLP 流程用 PyTorch 完整實作，並且**真的拿真實照片訓練到會辨識**。
+A complete PyTorch implementation of the most basic CNN → MLP pipeline —
+`Conv → ReLU → Pool → Conv → ReLU → Pool → Flatten → Linear → ReLU → Linear` —
+**actually trained on real photographs until it can classify them**.
 
-資料集是 **Imagenette**（ImageNet 挑出來的 10 類真實照片，9,469 張訓練 / 3,925 張驗證）。
-在 Apple Silicon（MPS）上 12 epochs 約 12 分鐘，驗證準確率 **70.14%**（隨機猜 = 10%）。
+The dataset is **Imagenette** (10 classes pulled out of ImageNet, 9,469 training / 3,925 validation
+real color photographs). On Apple Silicon (MPS), 12 epochs take about 12 minutes and reach
+**70.14%** validation accuracy (random guessing = 10%).
 
-> 這個專案的重點不是衝高準確率，而是把「兩層卷積的參數幾乎都壓在 Flatten 後的第一層 Linear」
-> 這件事用數字與圖攤開來看，並記錄從這裡要往上推該改哪裡。
+> The point of this project is not to chase accuracy. It is to lay out, in numbers and pictures,
+> the fact that with only two conv layers almost every parameter ends up in the first `Linear`
+> after `Flatten` — and to record what you would change to push past that.
 
 ---
 
-## 結果一覽
+## Results at a glance
 
-| 項目 | 數值 |
+| Metric | Value |
 |---|---|
-| 驗證準確率（best = final，epoch 12） | **70.14%** |
-| 訓練準確率（epoch 12） | 73.20% |
-| 總參數量（128×128 輸入） | 16,799,434 |
-| 其中 `Linear(65536 → 256)` | 16,777,472（**99.87%**） |
-| 訓練時間 | 12 epochs / 約 12 分鐘（M 系列 MPS） |
-| 裝置 | torch 2.10.0 + torchvision 0.25.0，device = `mps` |
+| Validation accuracy (best = final, epoch 12) | **70.14%** |
+| Training accuracy (epoch 12) | 73.20% |
+| Total parameters (128×128 input) | 16,799,434 |
+| ...of which `Linear(65536 → 256)` | 16,777,472 (**99.87%**) |
+| Training time | 12 epochs / ~12 minutes (Apple Silicon MPS) |
+| Environment | torch 2.10.0 + torchvision 0.25.0, device = `mps` |
 
 ---
 
-## 架構
+## Architecture
 
 ```
-輸入 (N, 3, 128, 128)
+input (N, 3, 128, 128)
   Conv2d(3 → 32, k=3, p=1)   → (N, 32, 128, 128)        896 params
   ReLU
   MaxPool2d(2)               → (N, 32,  64,  64)
@@ -40,15 +43,18 @@
   Linear(256 → 10)           → (N, 10)                 2,570 params   ← logits
 ```
 
-卷積輸出尺寸：$O = \lfloor (I + 2P - K)/S \rfloor + 1$，`padding=1, k=3, s=1` 讓長寬不變，
-長寬只由兩次 `MaxPool2d(2)` 各砍一半。
+Convolution output size: $O = \lfloor (I + 2P - K)/S \rfloor + 1$. With `padding=1, k=3, s=1`
+the spatial dimensions are unchanged, so height and width are halved purely by the two
+`MaxPool2d(2)` layers.
 
-**為什麼輸入是 128 不是 224**：同一個架構吃 224×224 時，Flatten 後是 `64×56×56 = 200,704` 維，
-第一層 Linear 就要 **51,380,480** 個參數（佔全模型 **99.96%**），在 MPS/CPU 上訓練不現實。
-架構一行都沒改，只把輸入換成 128×128，Flatten 變成 `64×32×32 = 65,536` 維。
-Notebook 第 1 部分用 `(4, 3, 224, 224)` 假輸入把 224 的版本逐層跑過一遍對照架構表。
+**Why the input is 128 and not 224.** Feeding 224×224 through this same architecture gives a
+Flatten of `64×56×56 = 200,704`, so the first `Linear` alone needs **51,380,480** parameters
+(**99.96%** of the whole model) — not realistic to train on MPS or CPU. Not a single line of the
+architecture was changed; only the input was switched to 128×128, which makes Flatten
+`64×32×32 = 65,536`. Part 1 of the notebook still runs the 224 version layer by layer on a
+`(4, 3, 224, 224)` dummy input to check it against the architecture table.
 
-| 層 | 224 版參數 | 佔比 |
+| Layer | Params @ 224 | Share |
 |---|---:|---:|
 | Conv1 | 896 | 0.00% |
 | Conv2 | 18,496 | 0.04% |
@@ -58,18 +64,19 @@ Notebook 第 1 部分用 `(4, 3, 224, 224)` 假輸入把 224 的版本逐層跑�
 
 ---
 
-## 訓練設定
+## Training setup
 
-- loss：`CrossEntropyLoss`（內含 log-softmax，所以 `forward` 回傳 logits，不要自己先 softmax）
-- optimizer：Adam，`lr=1e-3`、`weight_decay=1e-4`
-- scheduler：`CosineAnnealingLR(T_max=12)`
-- augmentation：train 用 `RandomResizedCrop(128, scale=(0.5,1.0))` + `RandomHorizontalFlip`；
-  val 只做 `Resize(146)` + `CenterCrop(128)`；兩者都用 ImageNet 的 mean / std 做 Normalize
-- batch size：train 64 / val 128
+- Loss: `CrossEntropyLoss` (log-softmax is built in, so `forward` returns raw logits — do not
+  apply softmax yourself)
+- Optimizer: Adam, `lr=1e-3`, `weight_decay=1e-4`
+- Scheduler: `CosineAnnealingLR(T_max=12)`
+- Augmentation: train uses `RandomResizedCrop(128, scale=(0.5,1.0))` + `RandomHorizontalFlip`;
+  val only `Resize(146)` + `CenterCrop(128)`; both normalized with the ImageNet mean / std
+- Batch size: 64 train / 128 val
 
-### 訓練曲線
+### Training curves
 
-![loss 與 accuracy 曲線](assets/02-curves.png)
+![loss and accuracy curves](assets/02-curves.png)
 
 ```
 epoch  1/12  train loss 1.9866 acc 33.10%  |  val loss 1.6589 acc 43.18%  (184.1s, lr=9.83e-04)  <- best
@@ -86,85 +93,91 @@ epoch 11/12  train loss 0.8403 acc 72.90%  |  val loss 0.9364 acc 69.86%  ( 46.1
 epoch 12/12  train loss 0.8233 acc 73.20%  |  val loss 0.9330 acc 70.14%  ( 44.9s, lr=0.00e+00)  <- best
 ```
 
-12 個 epoch 全程 val 都還在往上，cosine 把 lr 壓到 0 才停，沒有出現 val loss 翻上去的典型過擬合轉折，
-但 train acc（73.20%）已經穩定高於 val acc（70.14%）約 3 個百分點 —— 這個差距的來源就是那層 1,677 萬參數的 Linear。
+Validation accuracy was still climbing at epoch 12 — training stopped because cosine annealing
+had driven the learning rate to 0, not because the model turned over into the classic rising
+val-loss pattern. But train accuracy (73.20%) is consistently about 3 points above val accuracy
+(70.14%), and that gap comes from the 16.8M-parameter `Linear`.
 
 ---
 
-## 評估
+## Evaluation
 
-### 每類準確率
+### Per-class accuracy
 
-| class | 中文 | accuracy | support |
-|---|---|---:|---:|
-| tench | 丁鱥魚 | 82.69% | 387 |
-| English springer | 史賓格犬 | 77.47% | 395 |
-| parachute | 降落傘 | 76.92% | 390 |
-| garbage truck | 垃圾車 | 76.61% | 389 |
-| cassette player | 卡式隨身聽 | 73.11% | 357 |
-| church | 教堂 | 70.90% | 409 |
-| French horn | 法國號 | 69.54% | 394 |
-| gas pump | 加油槍 | 66.35% | 419 |
-| golf ball | 高爾夫球 | 60.90% | 399 |
-| **chain saw** | 鏈鋸 | **47.41%** | 386 |
+| Class | Accuracy | Support |
+|---|---:|---:|
+| tench | 82.69% | 387 |
+| English springer | 77.47% | 395 |
+| parachute | 76.92% | 390 |
+| garbage truck | 76.61% | 389 |
+| cassette player | 73.11% | 357 |
+| church | 70.90% | 409 |
+| French horn | 69.54% | 394 |
+| gas pump | 66.35% | 419 |
+| golf ball | 60.90% | 399 |
+| **chain saw** | **47.41%** | 386 |
 
 ### Confusion matrix
 
 ![confusion matrix](assets/03-confusion-matrix.png)
 
-最常混淆的五組：
+The five most frequent confusions:
 
 ```
-         chain saw 被判成 French horn       43 次
-         golf ball 被判成 parachute         32 次
-          gas pump 被判成 cassette player   32 次
-         chain saw 被判成 tench             31 次
-         chain saw 被判成 English springer  31 次
+         chain saw → French horn       43 times
+         golf ball → parachute         32 times
+          gas pump → cassette player   32 times
+         chain saw → tench             31 times
+         chain saw → English springer  31 times
 ```
 
-鏈鋸（47.41%）明顯拖累整體，而且錯得很分散 —— 被判成法國號、丁鱥魚、史賓格犬都有。
-這類照片通常是「人手持握著某個細長金屬物件、背景雜亂的戶外」，兩層卷積抽到的
-只有邊緣與色塊層級的特徵，分不出細長物件的種類，只能靠背景猜。
-高爾夫球被判成降落傘（白色圓形 vs 白色傘面）同樣是純低階特徵造成的誤判。
+Chain saw (47.41%) drags down the overall score, and it fails in a scattered way — misread as a
+French horn, a tench, and an English springer alike. Those photos are typically "a person holding
+some long thin metal object, outdoors, cluttered background." Two conv layers only pick up
+edge- and color-block-level features, which cannot tell one long thin object from another, so the
+model falls back on the background. Golf ball → parachute (a white circle vs. a white canopy) is
+the same low-level-feature failure.
 
-### 實際推論
+### Inference in practice
 
-![val 影像上的預測](assets/04-predictions.png)
+![predictions on val images](assets/04-predictions.png)
 
-隨機抽 16 張驗證集影像，對 15 張（綠色標題為判對、紅色為判錯，括號內是正解）。
+16 randomly sampled validation images, 15 correct (green titles are correct, red are wrong, with
+the ground truth in parentheses).
 
-單張影像的完整 softmax 分佈：
+Full softmax distribution for a single image:
 
-![單張影像的 softmax 分佈](assets/05-softmax.png)
+![softmax distribution for one image](assets/05-softmax.png)
 
 ```
 top-3:
-  church            教堂           93.84%
-  gas pump          加油槍           2.30%
-  garbage truck     垃圾車           1.85%
+  church            93.84%
+  gas pump           2.30%
+  garbage truck      1.85%
 ```
 
 ---
 
-## 卷積學到什麼
+## What the convolutions actually learned
 
-左：第一層 32 個 `3×3×3` filter 的權重直接當 RGB 小圖畫出來。
-右：同一張教堂照片經過 `Conv1 + ReLU` 之後的 32 張 feature map。
+Left: the weights of all 32 first-layer `3×3×3` filters, drawn directly as RGB thumbnails.
+Right: the 32 feature maps produced by `Conv1 + ReLU` on the same church photo.
 
 | Conv1 filters | Conv1 feature maps |
 |---|---|
 | ![conv1 filters](assets/06-conv1-filters.png) | ![conv1 feature maps](assets/07-feature-maps.png) |
 
-只有兩層，學到的就是邊緣、色彩對比、明暗區塊這種低階特徵 —— 這也解釋了為什麼
-「細長金屬物件」這種需要語意層級的類別會輸得這麼難看。
+With only two layers, what gets learned is edges, color contrast, and light/dark regions — purely
+low-level features. That is exactly why a category like "long thin metal object," which needs
+semantic-level features, loses so badly.
 
-訓練資料經過 augmentation 後長這樣：
+This is what the training data looks like after augmentation:
 
-![訓練 batch](assets/01-training-batch.png)
+![training batch](assets/01-training-batch.png)
 
 ---
 
-## 怎麼跑
+## Running it
 
 ```bash
 git clone https://github.com/lukerspace/ML-CNN-Imagenette-Classifier.git
@@ -173,17 +186,18 @@ pip install -r requirements.txt
 jupyter lab cnn_pytorch.ipynb
 ```
 
-資料集**不在 repo 裡**（129MB）。Notebook 的 `Imagenette(..., download=True)` 第一次執行會自己
-下載解壓到 `./data/`，之後直接讀本機，不會重抓。
+The dataset is **not in the repo** (129MB). The notebook's `Imagenette(..., download=True)` will
+download and extract it into `./data/` on the first run and read it locally from then on.
 
-### 用訓練好的權重直接推論
+### Running inference with the trained weights
 
-權重檔各 67MB，放在 [Releases](https://github.com/lukerspace/ML-CNN-Imagenette-Classifier/releases) 而不是 repo 裡：
+The checkpoints are 67MB each, so they live in
+[Releases](https://github.com/lukerspace/ML-CNN-Imagenette-Classifier/releases) rather than in the repo:
 
-| 檔案 | 說明 |
+| File | Description |
 |---|---|
-| `cnn_imagenette.pt` | 最終權重，附 `classes` / `img_size` / `mean` / `std` / `val_acc` 等 metadata |
-| `cnn_imagenette_best.pt` | 訓練過程中 val acc 最佳的 checkpoint（本次 = 最後一個 epoch，兩者等價） |
+| `cnn_imagenette.pt` | Final weights, bundled with `classes` / `img_size` / `mean` / `std` / `val_acc` metadata |
+| `cnn_imagenette_best.pt` | Best-val-accuracy checkpoint during training (here the last epoch, so identical to the above) |
 
 ```bash
 mkdir -p checkpoints
@@ -193,7 +207,7 @@ gh release download v1.0 -R lukerspace/ML-CNN-Imagenette-Classifier -D checkpoin
 ```python
 import torch, torch.nn as nn
 
-class CNN_MLP(nn.Module):                      # 與 notebook 2.2 節同一份
+class CNN_MLP(nn.Module):                      # same class as notebook section 2.2
     def __init__(self, in_channels=3, img_size=128, num_classes=10):
         super().__init__()
         self.features = nn.Sequential(
@@ -217,48 +231,54 @@ model.load_state_dict(ckpt["state_dict"])
 model.eval()
 ```
 
-Notebook 2.7 節的 `predict_image(path)` 可以直接吃任何一張本機 jpg/png，回傳 top-3 類別與機率
-（只有這 10 類，丟別的東西進去它一定會硬猜一個）。
+`predict_image(path)` in notebook section 2.7 takes any local jpg/png and returns the top-3
+classes with probabilities. (It only knows these 10 classes — give it anything else and it will
+still pick one.)
 
 ---
 
-## 專案結構
+## Project layout
 
 ```
 ML-CNN-Imagenette-Classifier/
-├── cnn_pytorch.ipynb        # 主要內容：形狀驗證 → 訓練 → 評估 → 視覺化 → 存檔推論
-├── assets/                  # README 用的圖，全部從 notebook 輸出抽出來
+├── cnn_pytorch.ipynb        # the main content: shape checks → training → evaluation → visualization → save & infer
+├── assets/                  # README figures, all extracted from the notebook's outputs
 ├── requirements.txt
-├── data/                    # 自動下載，.gitignore（129MB）
-└── checkpoints/             # 從 Releases 下載，.gitignore（各 67MB）
+├── data/                    # downloaded automatically, gitignored (129MB)
+└── checkpoints/             # downloaded from Releases, gitignored (67MB each)
 ```
 
-Notebook 分兩部分：
+The notebook is in two parts:
 
-| 部分 | 內容 |
+| Part | Content |
 |---|---|
-| 第 1 部分 | 用 `(4, 3, 224, 224)` 假輸入逐層驗證輸出形狀與參數量，對照架構表 |
-| 第 2 部分 | 同一個架構接 Imagenette：資料 → 模型 → 訓練 → 評估 → 推論 → 存檔 / 載回 |
+| Part 1 | Layer-by-layer verification of output shapes and parameter counts against the architecture table, using a `(4, 3, 224, 224)` dummy input |
+| Part 2 | The same architecture on Imagenette: data → model → training → evaluation → inference → save / reload |
 
 ---
 
-## 這個架構的瓶頸，與往上推的做法
+## The bottleneck, and how to push past it
 
-1. **瓶頸在 Flatten，不在卷積。** 224 版 99.96%、128 版 99.87% 的參數都在 Flatten 後的
-   第一層 Linear。兩層卷積加起來只有 19,392 個參數，佔 0.1% 都不到。
-2. **過擬合的來源也是它。** train acc 高於 val acc，壓它最有效的不是加更多正則化，
-   而是先把這層的參數量砍掉。
+1. **The bottleneck is Flatten, not the convolutions.** 99.96% of the parameters at 224, and
+   99.87% at 128, sit in the first `Linear` after `Flatten`. The two conv layers together come to
+   19,392 parameters — under 0.1% of the model.
+2. **That layer is also the source of the overfitting.** Train accuracy runs above val accuracy,
+   and the most effective fix is not more regularization but cutting that layer's parameter count
+   first.
 
-往上推的標準做法，照效益排序：
+The standard ways to improve this, ordered by payoff:
 
-1. 用 `AdaptiveAvgPool2d(1)` 取代巨大的 Flatten → 參數少一到兩個數量級、過擬合大幅下降
-2. 每個 Conv 後加 `BatchNorm2d` → 收斂更快更穩
-3. 堆到 3~4 段卷積，通道 32 → 64 → 128 → 256 → 才抽得到語意層級特徵（鏈鋸那類才有救）
-4. 加 `Dropout`、換 SGD + momentum 搭配更長的 cosine schedule
-5. 真的要高準確率就 `torchvision.models.resnet18(weights=...)` 做 transfer learning
+1. Replace the enormous `Flatten` with `AdaptiveAvgPool2d(1)` → one to two orders of magnitude
+   fewer parameters, and far less overfitting
+2. Add `BatchNorm2d` after each conv → faster, more stable convergence
+3. Stack 3–4 conv stages with channels 32 → 64 → 128 → 256 → only then do you get
+   semantic-level features (which is what a class like chain saw needs)
+4. Add `Dropout`, and switch to SGD + momentum with a longer cosine schedule
+5. If you genuinely need high accuracy, use `torchvision.models.resnet18(weights=...)` for
+   transfer learning
 
 ---
 
-## 授權
+## License
 
 MIT
