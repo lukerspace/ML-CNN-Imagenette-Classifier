@@ -1,0 +1,12 @@
+# 資料集：129MB，torchvision 第一次執行會自己下載，不入版控
+data/
+*.tgz
+
+# 模型權重：各 67MB，放 GitHub Release，不入版控
+checkpoints/
+*.pt
+
+.DS_Store
+__pycache__/
+.ipynb_checkpoints/
+.venv/
